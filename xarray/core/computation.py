@@ -1727,7 +1727,7 @@ def dot(*arrays, dims=None, **kwargs):
     return result.transpose(*all_dims, missing_dims="ignore")
 
 
-def where(cond, x, y):
+def where(cond, x, y, keep_attrs=None):
     """Return elements from `x` or `y` depending on `cond`.
 
     Performs xarray-like broadcasting across input arguments.
@@ -1743,6 +1743,13 @@ def where(cond, x, y):
         values to choose from where `cond` is True
     y : scalar, array, Variable, DataArray or Dataset
         values to choose from where `cond` is False
+    keep_attrs : bool or str or callable, optional
+        How to treat attributes. If True, keep attributes from `x` if it is a
+        Variable, DataArray or Dataset, otherwise from `y` if it is one of
+        these types. If neither is labeled, discard data attributes. If False,
+        discard attributes. Other values are passed to :py:func:`apply_ufunc`.
+        By default, use the global ``keep_attrs`` option, or False if that
+        option is set to ``"default"``.
 
     Returns
     -------
@@ -1808,8 +1815,14 @@ def where(cond, x, y):
     Dataset.where, DataArray.where :
         equivalent methods
     """
+    from .dataarray import DataArray
+    from .dataset import Dataset
+
+    if keep_attrs is None:
+        keep_attrs = _get_keep_attrs(default=False)
+
     # alignment for three arguments is complicated, so don't support it yet
-    return apply_ufunc(
+    result = apply_ufunc(
         duck_array_ops.where,
         cond,
         x,
@@ -1817,7 +1830,28 @@ def where(cond, x, y):
         join="exact",
         dataset_join="exact",
         dask="allowed",
+        keep_attrs=keep_attrs,
     )
+
+    if keep_attrs is True and hasattr(result, "attrs"):
+        # apply_ufunc takes attributes from the first input, but here that is
+        # the condition. Restore metadata from the first labeled data operand.
+        labeled_types = (Variable, DataArray, Dataset)
+        source = x if isinstance(x, labeled_types) else y
+        if not isinstance(source, labeled_types):
+            source = None
+        result.attrs = getattr(source, "attrs", {})
+        if isinstance(result, Dataset):
+            if not isinstance(source, Dataset):
+                result.attrs = {}
+            for name in result.data_vars:
+                variable = source[name] if isinstance(source, Dataset) else source
+                result[name].attrs = getattr(variable, "attrs", {})
+        for name in getattr(source, "coords", {}):
+            if name in result.coords:
+                result[name].attrs = source[name].attrs
+
+    return result
 
 
 def polyval(coord, coeffs, degree_dim="degree"):
